@@ -364,3 +364,14 @@ class Database:
         
         conn.close()
         return result[0] if result else None
+    
+    def get_all_players(self):
+        """دریافت لیست همه بازیکنان"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT user_id, username, country_code FROM players WHERE is_active = 1')
+        players = cursor.fetchall()
+        
+        conn.close()
+        return players
