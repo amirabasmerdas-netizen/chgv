@@ -1,377 +1,256 @@
 import sqlite3
-import json
-import random
-from datetime import datetime
-from config import COUNTRIES, ARMY_LEVELS
+import logging
+from config import DB_NAME
+
+logger = logging.getLogger(__name__)
 
 class Database:
-    def __init__(self, db_name='ancient_war.db'):
-        self.db_name = db_name
-        self.init_database()
+    def __init__(self):
+        self.conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.create_tables()
     
-    def get_connection(self):
-        return sqlite3.connect(self.db_name, check_same_thread=False)
-    
-    def init_database(self):
-        conn = self.get_connection()
-        cursor = conn.cursor()
+    def create_tables(self):
+        cursor = self.conn.cursor()
         
         # جدول بازیکنان
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS players (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                country_code TEXT,
-                controller_type TEXT DEFAULT 'HUMAN',
-                is_active INTEGER DEFAULT 1,
-                join_date TEXT
-            )
+        CREATE TABLE IF NOT EXISTS players (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            full_name TEXT,
+            country_id INTEGER,
+            joined_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_active BOOLEAN DEFAULT 1
+        )
         ''')
         
         # جدول کشورها
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS countries (
-                code TEXT PRIMARY KEY,
-                name TEXT,
-                controller_type TEXT DEFAULT 'AI',
-                player_id INTEGER,
-                army_level INTEGER DEFAULT 1,
-                gold INTEGER DEFAULT 1000,
-                iron INTEGER DEFAULT 500,
-                stone INTEGER DEFAULT 500,
-                food INTEGER DEFAULT 1000,
-                power_score INTEGER DEFAULT 0,
-                last_update TEXT
-            )
+        CREATE TABLE IF NOT EXISTS countries (
+            id INTEGER PRIMARY KEY,
+            name TEXT UNIQUE,
+            controller TEXT DEFAULT 'AI', -- 'HUMAN' یا 'AI'
+            player_id INTEGER,
+            specialty TEXT,
+            color TEXT,
+            is_active BOOLEAN DEFAULT 1
+        )
+        ''')
+        
+        # جدول منابع
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS resources (
+            country_id INTEGER PRIMARY KEY,
+            gold INTEGER DEFAULT 1000,
+            iron INTEGER DEFAULT 500,
+            stone INTEGER DEFAULT 800,
+            food INTEGER DEFAULT 1200,
+            last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
         ''')
         
         # جدول ارتش
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS army (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                country_code TEXT,
-                soldiers_count INTEGER DEFAULT 100,
-                cavalry_count INTEGER DEFAULT 20,
-                siege_count INTEGER DEFAULT 5,
-                level INTEGER DEFAULT 1,
-                total_power INTEGER DEFAULT 0,
-                FOREIGN KEY (country_code) REFERENCES countries(code)
-            )
+        CREATE TABLE IF NOT EXISTS army (
+            country_id INTEGER PRIMARY KEY,
+            level INTEGER DEFAULT 1,
+            infantry INTEGER DEFAULT 100,
+            cavalry INTEGER DEFAULT 20,
+            archers INTEGER DEFAULT 30,
+            defense INTEGER DEFAULT 50,
+            power INTEGER DEFAULT 150,
+            last_training TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
         ''')
         
         # جدول اتحادها
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS alliances (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                country1_code TEXT,
-                country2_code TEXT,
-                relationship_score INTEGER DEFAULT 50,
-                is_active INTEGER DEFAULT 1,
-                created_date TEXT
-            )
+        CREATE TABLE IF NOT EXISTS alliances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            country1_id INTEGER,
+            country2_id INTEGER,
+            relation_type TEXT, -- 'ALLIANCE', 'WAR', 'NEUTRAL'
+            strength INTEGER DEFAULT 50,
+            created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(country1_id, country2_id)
+        )
+        ''')
+        
+        # جدول فصل
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS seasons (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            season_number INTEGER,
+            start_date TIMESTAMP,
+            end_date TIMESTAMP,
+            winner_country_id INTEGER,
+            winner_player_id INTEGER,
+            is_active BOOLEAN DEFAULT 0
+        )
         ''')
         
         # جدول رویدادها
         cursor.execute('''
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type TEXT,
-                description TEXT,
-                countries_involved TEXT,
-                date_time TEXT,
-                season_id INTEGER
-            )
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT,
+            country_id INTEGER,
+            target_country_id INTEGER,
+            description TEXT,
+            resources_change TEXT, -- JSON
+            army_change TEXT, -- JSON
+            event_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
         ''')
         
-        # جدول فصل‌ها
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS seasons (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                start_date TEXT,
-                end_date TEXT,
-                is_active INTEGER DEFAULT 0,
-                winner_country TEXT,
-                winner_player_id INTEGER
-            )
-        ''')
-        
-        # جدول پیام‌های وزیر
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS advisor_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                country_code TEXT,
-                message_type TEXT,
-                message TEXT,
-                is_read INTEGER DEFAULT 0,
-                created_date TEXT
-            )
-        ''')
-        
-        # ایجاد کشورها اگر وجود ندارند
-        for code, info in COUNTRIES.items():
-            cursor.execute('''
-                INSERT OR IGNORE INTO countries (code, name, controller_type, last_update)
-                VALUES (?, ?, 'AI', ?)
-            ''', (code, info['name'], datetime.now().isoformat()))
-            
-            # ایجاد ارتش اولیه برای کشور
-            cursor.execute('''
-                INSERT OR IGNORE INTO army (country_code, soldiers_count, cavalry_count, siege_count, level, total_power)
-                VALUES (?, 100, 20, 5, 1, 125)
-            ''', (code,))
-        
-        conn.commit()
-        conn.close()
+        self.conn.commit()
+        self.initialize_countries()
     
-    def get_country_info_by_player(self, user_id):
-        """دریافت اطلاعات کشور بر اساس آیدی بازیکن"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
+    def initialize_countries(self):
+        """مقداردهی اولیه کشورها"""
+        from config import ANCIENT_COUNTRIES
         
+        cursor = self.conn.cursor()
+        
+        for country in ANCIENT_COUNTRIES:
+            cursor.execute('''
+            INSERT OR IGNORE INTO countries (id, name, specialty, color) 
+            VALUES (?, ?, ?, ?)
+            ''', (country['id'], country['name'], country['specialty'], country['color']))
+        
+        self.conn.commit()
+    
+    def get_country_by_id(self, country_id):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM countries WHERE id = ?', (country_id,))
+        return cursor.fetchone()
+    
+    def get_player_country(self, user_id):
+        cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT c.*, a.soldiers_count, a.cavalry_count, a.siege_count, a.level, a.total_power 
-            FROM players p
-            JOIN countries c ON p.country_code = c.code
-            JOIN army a ON c.code = a.country_code
-            WHERE p.user_id = ?
+        SELECT c.* FROM players p
+        JOIN countries c ON p.country_id = c.id
+        WHERE p.user_id = ? AND p.is_active = 1
         ''', (user_id,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            columns = ['code', 'name', 'controller_type', 'player_id', 'army_level', 
-                      'gold', 'iron', 'stone', 'food', 'power_score', 'last_update',
-                      'soldiers', 'cavalry', 'siege', 'level', 'total_power']
-            return dict(zip(columns, result))
-        return None
+        return cursor.fetchone()
     
-    def add_player(self, user_id, username, country_code):
-        conn = self.get_connection()
-        cursor = conn.cursor()
+    def assign_country_to_player(self, country_id, user_id, username, full_name):
+        cursor = self.conn.cursor()
         
-        # بررسی وجود بازیکن
-        cursor.execute('SELECT * FROM players WHERE user_id = ?', (user_id,))
-        if cursor.fetchone():
-            conn.close()
-            return False
-        
-        # اضافه کردن بازیکن
-        cursor.execute('''
-            INSERT INTO players (user_id, username, country_code, controller_type, join_date)
-            VALUES (?, ?, ?, 'HUMAN', ?)
-        ''', (user_id, username, country_code, datetime.now().isoformat()))
-        
-        # به‌روزرسانی کشور
-        cursor.execute('''
-            UPDATE countries 
-            SET controller_type = 'HUMAN', player_id = ?, last_update = ?
-            WHERE code = ?
-        ''', (user_id, datetime.now().isoformat(), country_code))
-        
-        conn.commit()
-        conn.close()
-        return True
-    
-    def get_ai_countries(self):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT code, name FROM countries 
-            WHERE controller_type = 'AI' 
-            ORDER BY name
-        ''')
-        
-        countries = cursor.fetchall()
-        conn.close()
-        return countries
-    
-    def get_country_info(self, country_code):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT c.*, p.username, a.soldiers_count, a.cavalry_count, a.siege_count, a.level, a.total_power 
-            FROM countries c
-            LEFT JOIN players p ON c.player_id = p.user_id
-            LEFT JOIN army a ON c.code = a.country_code
-            WHERE c.code = ?
-        ''', (country_code,))
-        
-        result = cursor.fetchone()
-        
-        if result:
-            columns = ['code', 'name', 'controller_type', 'player_id', 'army_level', 
-                      'gold', 'iron', 'stone', 'food', 'power_score', 'last_update',
-                      'username', 'soldiers', 'cavalry', 'siege', 'level', 'total_power']
-            country_info = dict(zip(columns, result))
-            conn.close()
-            return country_info
-        
-        conn.close()
-        return None
-    
-    def update_resources(self, country_code, gold_change=0, iron_change=0, stone_change=0, food_change=0):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE countries 
-            SET gold = gold + ?, 
-                iron = iron + ?, 
-                stone = stone + ?, 
-                food = food + ?,
-                last_update = ?
-            WHERE code = ?
-        ''', (gold_change, iron_change, stone_change, food_change, datetime.now().isoformat(), country_code))
-        
-        conn.commit()
-        conn.close()
-        return True
-    
-    def upgrade_army(self, country_code):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # دریافت اطلاعات فعلی
-        cursor.execute('SELECT army_level, gold FROM countries WHERE code = ?', (country_code,))
+        # بررسی اینکه کشور قبلاً اختصاص داده نشده باشد
+        cursor.execute('SELECT controller FROM countries WHERE id = ?', (country_id,))
         country = cursor.fetchone()
         
-        if not country:
-            conn.close()
-            return False, "کشور یافت نشد"
+        if country and country['controller'] == 'AI':
+            # ثبت بازیکن
+            cursor.execute('''
+            INSERT OR REPLACE INTO players (user_id, username, full_name, country_id, is_active)
+            VALUES (?, ?, ?, ?, 1)
+            ''', (user_id, username, full_name, country_id))
+            
+            # به‌روزرسانی کشور
+            cursor.execute('''
+            UPDATE countries 
+            SET controller = 'HUMAN', player_id = ?
+            WHERE id = ?
+            ''', (user_id, country_id))
+            
+            # ایجاد منابع اولیه
+            cursor.execute('''
+            INSERT OR REPLACE INTO resources (country_id) 
+            VALUES (?)
+            ''', (country_id,))
+            
+            # ایجاد ارتش اولیه
+            cursor.execute('''
+            INSERT OR REPLACE INTO army (country_id) 
+            VALUES (?)
+            ''', (country_id,))
+            
+            self.conn.commit()
+            return True
         
-        current_level, gold = country
-        next_level = current_level + 1
-        
-        if next_level > 5:
-            conn.close()
-            return False, "حداکثر سطح رسیده است"
-        
-        upgrade_cost = ARMY_LEVELS[next_level]['upgrade_cost']
-        
-        if gold < upgrade_cost:
-            conn.close()
-            return False, "طلا کافی نیست"
-        
-        # پرداخت هزینه
-        cursor.execute('UPDATE countries SET gold = gold - ? WHERE code = ?', (upgrade_cost, country_code))
-        
-        # ارتقای ارتش
-        cursor.execute('UPDATE countries SET army_level = ? WHERE code = ?', (next_level, country_code))
-        cursor.execute('UPDATE army SET level = ? WHERE country_code = ?', (next_level, country_code))
-        
-        # محاسبه قدرت جدید
-        new_power = ARMY_LEVELS[next_level]['power'] * 100
-        cursor.execute('UPDATE army SET total_power = ? WHERE country_code = ?', (new_power, country_code))
-        
-        conn.commit()
-        conn.close()
-        return True, f"ارتش به سطح {next_level} ارتقا یافت!"
+        return False
     
-    def create_alliance(self, country1, country2):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # بررسی وجود اتحاد
+    def get_ai_countries(self):
+        cursor = self.conn.cursor()
         cursor.execute('''
-            SELECT * FROM alliances 
-            WHERE ((country1_code = ? AND country2_code = ?) 
-            OR (country1_code = ? AND country2_code = ?)) 
-            AND is_active = 1
-        ''', (country1, country2, country2, country1))
-        
-        if cursor.fetchone():
-            conn.close()
-            return False, "اتحاد از قبل وجود دارد"
-        
-        # ایجاد اتحاد جدید
-        cursor.execute('''
-            INSERT INTO alliances (country1_code, country2_code, created_date)
-            VALUES (?, ?, ?)
-        ''', (country1, country2, datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-        return True, "اتحاد با موفقیت ایجاد شد"
-    
-    def start_season(self):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # پایان دادن به فصل فعال قبلی
-        cursor.execute('UPDATE seasons SET is_active = 0 WHERE is_active = 1')
-        
-        cursor.execute('''
-            INSERT INTO seasons (start_date, is_active)
-            VALUES (?, 1)
-        ''', (datetime.now().isoformat(),))
-        
-        season_id = cursor.lastrowid
-        
-        conn.commit()
-        conn.close()
-        return season_id
-    
-    def end_season(self, winner_country_code, winner_player_id):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE seasons 
-            SET end_date = ?, is_active = 0, winner_country = ?, winner_player_id = ?
-            WHERE is_active = 1
-        ''', (datetime.now().isoformat(), winner_country_code, winner_player_id))
-        
-        conn.commit()
-        conn.close()
-        return True
+        SELECT * FROM countries 
+        WHERE controller = 'AI' AND is_active = 1
+        ORDER BY id
+        ''')
+        return cursor.fetchall()
     
     def get_active_season(self):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
+        cursor = self.conn.cursor()
         cursor.execute('SELECT * FROM seasons WHERE is_active = 1')
-        season = cursor.fetchone()
-        
-        conn.close()
-        return season
+        return cursor.fetchone()
     
-    def add_event(self, event_type, description, countries_involved):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        season = self.get_active_season()
-        season_id = season[0] if season else None
-        
+    def start_new_season(self, season_number):
+        cursor = self.conn.cursor()
         cursor.execute('''
-            INSERT INTO events (event_type, description, countries_involved, date_time, season_id)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (event_type, description, json.dumps(countries_involved), datetime.now().isoformat(), season_id))
-        
-        conn.commit()
-        conn.close()
-        return True
-    
-    def get_player_country_code(self, user_id):
-        """دریافت کد کشور بازیکن"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT country_code FROM players WHERE user_id = ?', (user_id,))
-        result = cursor.fetchone()
-        
-        conn.close()
-        return result[0] if result else None
+        UPDATE seasons SET is_active = 0
+        ''')
+        cursor.execute('''
+        INSERT INTO seasons (season_number, start_date, is_active)
+        VALUES (?, CURRENT_TIMESTAMP, 1)
+        ''', (season_number,))
+        self.conn.commit()
     
     def get_all_players(self):
-        """دریافت لیست همه بازیکنان"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        SELECT p.*, c.name as country_name 
+        FROM players p
+        JOIN countries c ON p.country_id = c.id
+        WHERE p.is_active = 1
+        ''')
+        return cursor.fetchall()
+    
+    def update_resources(self, country_id, resources_dict):
+        cursor = self.conn.cursor()
+        set_clause = ', '.join([f"{key} = {key} + ?" for key in resources_dict.keys()])
+        values = list(resources_dict.values())
+        values.append(country_id)
         
-        cursor.execute('SELECT user_id, username, country_code FROM players WHERE is_active = 1')
-        players = cursor.fetchall()
+        query = f'''
+        UPDATE resources 
+        SET {set_clause}, last_update = CURRENT_TIMESTAMP
+        WHERE country_id = ?
+        '''
+        cursor.execute(query, values)
+        self.conn.commit()
+    
+    def get_country_resources(self, country_id):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM resources WHERE country_id = ?', (country_id,))
+        return cursor.fetchone()
+    
+    def get_country_army(self, country_id):
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM army WHERE country_id = ?', (country_id,))
+        return cursor.fetchone()
+    
+    def upgrade_army_level(self, country_id, cost):
+        cursor = self.conn.cursor()
+        cursor.execute('''
+        UPDATE army 
+        SET level = level + 1, 
+            power = power + 50,
+            defense = defense + 20,
+            last_training = CURRENT_TIMESTAMP
+        WHERE country_id = ?
+        ''', (country_id,))
         
-        conn.close()
-        return players
+        # کم کردن منابع
+        self.update_resources(country_id, {
+            'gold': -cost['gold'],
+            'iron': -cost['iron'],
+            'food': -cost['food']
+        })
+        
+        self.conn.commit()
+    
+    def close(self):
+        self.conn.close()
