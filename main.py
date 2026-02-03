@@ -1,50 +1,694 @@
 import os
+import logging
+from datetime import datetime
+from flask import Flask, request, jsonify
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    ContextTypes, MessageHandler, filters
+)
+import threading
+import time
+from apscheduler.schedulers.background import BackgroundScheduler
 
-# توکن ربات تلگرام (از متغیر محیطی بگیر یا مستقیماً قرار بده)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+from config import BOT_TOKEN, OWNER_ID, PORT, LISTEN, WEBHOOK_URL
+from database import Database
+from game_logic import GameLogic
+from advisor import Advisor
 
-# تنظیمات مالک
-OWNER_ID = 8588773170
+# تنظیمات لاگ
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# تنظیمات Webhook
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-PORT = int(os.getenv("PORT", 8443))
-LISTEN = "0.0.0.0"
+# اشیاء اصلی
+db = Database()
+game = GameLogic()
+advisor = Advisor()
 
-# تنظیمات دیتابیس
-DB_NAME = "ancient_war.db"
+# Flask app برای Webhook
+app = Flask(__name__)
 
-# لیست کشورهای باستانی
-ANCIENT_COUNTRIES = [
-    {"id": 1, "name": "پارس", "specialty": "اسب‌سوار سریع", "color": "🟡"},
-    {"id": 2, "name": "روم", "specialty": "دفاع قلعه", "color": "🟥"},
-    {"id": 3, "name": "مصر", "specialty": "تیرانداز ماهر", "color": "🟦"},
-    {"id": 4, "name": "چین", "specialty": "نیروی انبوه", "color": "🟢"},
-    {"id": 5, "name": "یونان", "specialty": "فالانژ قدرتمند", "color": "🟣"},
-    {"id": 6, "name": "بابل", "specialty": "دیوار مستحکم", "color": "🟠"},
-    {"id": 7, "name": "آشور", "specialty": "ارابه جنگی", "color": "🟤"},
-    {"id": 8, "name": "کارتاژ", "specialty": "ناوبری دریایی", "color": "🔵"},
-    {"id": 9, "name": "هند", "specialty": "فیل جنگی", "color": "🟣"},
-    {"id": 10, "name": "مقدونیه", "specialty": "سواره‌نظام", "color": "🔴"}
-]
+# ذخیره اپلیکیشن تلگرام
+telegram_app = None
 
-# منابع اولیه
-INITIAL_RESOURCES = {
-    "gold": 1000,
-    "iron": 500,
-    "stone": 800,
-    "food": 1200
-}
+def create_inline_keyboard(buttons_list, columns=2):
+    """ایجاد کیبورد اینلاین از لیست دکمه‌ها"""
+    keyboard = []
+    row = []
+    
+    for i, button in enumerate(buttons_list):
+        row.append(button)
+        if (i + 1) % columns == 0:
+            keyboard.append(row)
+            row = []
+    
+    if row:
+        keyboard.append(row)
+    
+    return InlineKeyboardMarkup(keyboard)
 
-# ارتش اولیه
-INITIAL_ARMY = {
-    "level": 1,
-    "infantry": 100,
-    "cavalry": 20,
-    "archers": 30,
-    "defense": 50,
-    "power": 150
-}
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دستور /start"""
+    user = update.effective_user
+    user_id = user.id
+    
+    # بررسی آیا بازیکن کشور دارد؟
+    player_country = db.get_player_country(user_id)
+    
+    if player_country:
+        # نمایش داشبورد بازیکن
+        await show_player_dashboard(update, context, user_id)
+    else:
+        # خوش‌آمدگویی به کاربر جدید
+        await update.message.reply_text(
+            f"👑 خوش آمدی {user.full_name}!\n\n"
+            "به بازی استراتژیک **جنگ جهانی باستان** خوش آمدی!\n"
+            "در حال حاضر شما کشوری ندارید.\n\n"
+            "برای افزودن بازیکن، مالک ربات باید از طریق منو مدیریت اقدام کند."
+        )
 
-# تنظیمات فصل
-SEASON_DURATION_DAYS = 30  # مدت فصل به روز
+async def show_player_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    """نمایش داشبورد بازیکن"""
+    player_country = db.get_player_country(user_id)
+    
+    if not player_country:
+        await update.message.reply_text("شما کشوری ندارید!")
+        return
+    
+    # دریافت اطلاعات
+    resources = db.get_country_resources(player_country['id'])
+    army = db.get_country_army(player_country['id'])
+    
+    # ایجاد متن داشبورد
+    dashboard_text = (
+        f"{player_country['color']} **{player_country['name']}**\n"
+        f"👤 فرمانروا: {update.effective_user.full_name}\n"
+        f"🎖️ تخصص: {player_country['specialty']}\n\n"
+        
+        f"💰 **منابع:**\n"
+        f"• طلا: {resources['gold']} 🪙\n"
+        f"• آهن: {resources['iron']} ⚒️\n"
+        f"• سنگ: {resources['stone']} 🪨\n"
+        f"• غذا: {resources['food']} 🌾\n\n"
+        
+        f"⚔️ **ارتش:**\n"
+        f"• سطح: {army['level']} 🏆\n"
+        f"• پیاده‌نظام: {army['infantry']} 🛡️\n"
+        f"• سواره‌نظام: {army['cavalry']} 🐎\n"
+        f"• تیرانداز: {army['archers']} 🏹\n"
+        f"• قدرت کل: {army['power']} ⚡\n"
+        f"• دفاع: {army['defense']} 🛡️\n"
+    )
+    
+    # ایجاد دکمه‌های داشبورد
+    buttons = [
+        InlineKeyboardButton("🔄 به‌روزرسانی", callback_data="refresh_dashboard"),
+        InlineKeyboardButton("⚔️ ارتقا ارتش", callback_data="upgrade_army"),
+        InlineKeyboardButton("💰 جمع‌آوری منابع", callback_data="collect_resources"),
+        InlineKeyboardButton("🤝 اتحادها", callback_data="show_alliances"),
+        InlineKeyboardButton("👑 مشاوره وزیر", callback_data="get_advice"),
+        InlineKeyboardButton("🏆 رده‌بندی", callback_data="show_ranking"),
+    ]
+    
+    keyboard = create_inline_keyboard(buttons, columns=2)
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            dashboard_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            dashboard_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+
+async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت کلیک روی دکمه‌های اینلاین"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "refresh_dashboard":
+        await show_player_dashboard(update, context, user_id)
+    
+    elif data == "upgrade_army":
+        await upgrade_army(update, context, user_id)
+    
+    elif data == "collect_resources":
+        await collect_resources(update, context, user_id)
+    
+    elif data == "get_advice":
+        await send_advisor_advice(update, context, user_id)
+    
+    elif data == "show_ranking":
+        await show_ranking(update, context)
+    
+    elif data == "show_alliances":
+        await show_alliances(update, context, user_id)
+    
+    elif data.startswith("assign_country_"):
+        if user_id == OWNER_ID:
+            country_id = int(data.split("_")[2])
+            context.user_data['selected_country'] = country_id
+            await query.edit_message_text(
+                f"کشور انتخاب شد. لطفاً آیدی عددی بازیکن را ارسال کنید:",
+                parse_mode='Markdown'
+            )
+    
+    elif data.startswith("admin_"):
+        if user_id == OWNER_ID:
+            await handle_admin_commands(update, context, data)
+
+async def upgrade_army(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    """ارتقای ارتش"""
+    player_country = db.get_player_country(user_id)
+    
+    if not player_country:
+        await update.callback_query.message.reply_text("شما کشوری ندارید!")
+        return
+    
+    army = db.get_country_army(player_country['id'])
+    resources = db.get_country_resources(player_country['id'])
+    
+    # هزینه ارتقا
+    upgrade_cost = {
+        'gold': army['level'] * 200,
+        'iron': army['level'] * 100,
+        'food': army['level'] * 150
+    }
+    
+    # بررسی منابع کافی
+    if (resources['gold'] >= upgrade_cost['gold'] and
+        resources['iron'] >= upgrade_cost['iron'] and
+        resources['food'] >= upgrade_cost['food']):
+        
+        # ارتقا ارتش
+        db.upgrade_army_level(player_country['id'], upgrade_cost)
+        
+        await update.callback_query.message.reply_text(
+            f"✅ ارتش {player_country['name']} به سطح {army['level'] + 1} ارتقا یافت!\n"
+            f"💰 هزینه: طلا:{upgrade_cost['gold']} آهن:{upgrade_cost['iron']} غذا:{upgrade_cost['food']}"
+        )
+    else:
+        await update.callback_query.message.reply_text(
+            f"❌ منابع کافی برای ارتقا ندارید!\n"
+            f"💰 نیاز: طلا:{upgrade_cost['gold']} آهن:{upgrade_cost['iron']} غذا:{upgrade_cost['food']}\n"
+            f"💰 دارایی: طلا:{resources['gold']} آهن:{resources['iron']} غذا:{resources['food']}"
+        )
+
+async def collect_resources(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    """جمع‌آوری منابع"""
+    player_country = db.get_player_country(user_id)
+    
+    if not player_country:
+        await update.callback_query.message.reply_text("شما کشوری ندارید!")
+        return
+    
+    # افزایش منابع تصادفی
+    resource_gains = {
+        'gold': 50,
+        'iron': 30,
+        'stone': 40,
+        'food': 80
+    }
+    
+    db.update_resources(player_country['id'], resource_gains)
+    
+    await update.callback_query.message.reply_text(
+        f"✅ منابع جمع‌آوری شد!\n"
+        f"🪙 طلا: +{resource_gains['gold']}\n"
+        f"⚒️ آهن: +{resource_gains['iron']}\n"
+        f"🪨 سنگ: +{resource_gains['stone']}\n"
+        f"🌾 غذا: +{resource_gains['food']}"
+    )
+
+async def send_advisor_advice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    """ارسال مشاوره وزیر"""
+    advice = advisor.send_advice_to_player(user_id)
+    
+    if advice:
+        await update.callback_query.message.reply_text(advice, parse_mode='Markdown')
+    else:
+        await update.callback_query.message.reply_text("در حال حاضر مشاوره‌ای موجود نیست.")
+
+async def show_ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش رده‌بندی"""
+    cursor = db.conn.cursor()
+    cursor.execute('''
+    SELECT c.name, c.color, a.power, a.level, 
+           CASE WHEN c.controller = 'HUMAN' THEN '👤' ELSE '🤖' END as controller
+    FROM army a
+    JOIN countries c ON a.country_id = c.id
+    WHERE c.is_active = 1
+    ORDER BY a.power DESC
+    LIMIT 10
+    ''')
+    
+    rankings = cursor.fetchall()
+    
+    if not rankings:
+        await update.callback_query.message.reply_text("هنوز رده‌بندی‌ای موجود نیست.")
+        return
+    
+    ranking_text = "🏆 **رده‌بندی قدرتمندترین کشورها:**\n\n"
+    
+    for i, country in enumerate(rankings, 1):
+        medal = ""
+        if i == 1: medal = "🥇"
+        elif i == 2: medal = "🥈"
+        elif i == 3: medal = "🥉"
+        else: medal = f"{i}."
+        
+        ranking_text += (
+            f"{medal} {country['color']} **{country['name']}** {country['controller']}\n"
+            f"   ⚡ قدرت: {country['power']} | 🏆 سطح: {country['level']}\n"
+        )
+    
+    await update.callback_query.message.reply_text(ranking_text, parse_mode='Markdown')
+
+async def show_alliances(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    """نمایش اتحادها"""
+    player_country = db.get_player_country(user_id)
+    
+    if not player_country:
+        await update.callback_query.message.reply_text("شما کشوری ندارید!")
+        return
+    
+    cursor = db.conn.cursor()
+    cursor.execute('''
+    SELECT 
+        c1.name as country1,
+        c2.name as country2,
+        a.relation_type,
+        a.strength
+    FROM alliances a
+    JOIN countries c1 ON a.country1_id = c1.id
+    JOIN countries c2 ON a.country2_id = c2.id
+    WHERE c1.id = ? OR c2.id = ?
+    ORDER BY a.relation_type
+    ''', (player_country['id'], player_country['id']))
+    
+    alliances = cursor.fetchall()
+    
+    if not alliances:
+        alliance_text = f"🌍 **{player_country['name']}** هیچ اتحادی ندارد.\n"
+        alliance_text += "از منوی اصلی برای تشکیل اتحاد اقدام کن."
+    else:
+        alliance_text = f"🤝 **اتحادهای {player_country['name']}:**\n\n"
+        
+        for alliance in alliances:
+            relation_emoji = "🛡️" if alliance['relation_type'] == 'ALLIANCE' else "⚔️"
+            relation_text = "اتحاد" if alliance['relation_type'] == 'ALLIANCE' else "جنگ"
+            
+            alliance_text += (
+                f"{relation_emoji} **{alliance['country1']}** ↔ **{alliance['country2']}\n"
+                f"   📊 رابطه: {relation_text} | 💪 قدرت: {alliance['strength']}%\n"
+            )
+    
+    await update.callback_query.message.reply_text(alliance_text, parse_mode='Markdown')
+
+# ------------------ ADMIN COMMANDS ------------------
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پنل مدیریت برای مالک"""
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("❌ فقط مالک ربات می‌تواند از این دستور استفاده کند!")
+        return
+    
+    buttons = [
+        InlineKeyboardButton("➕ افزودن بازیکن", callback_data="admin_add_player"),
+        InlineKeyboardButton("🎮 شروع فصل جدید", callback_data="admin_start_season"),
+        InlineKeyboardButton("🏁 پایان فصل", callback_data="admin_end_season"),
+        InlineKeyboardButton("📢 ارسال پیام عمومی", callback_data="admin_broadcast"),
+        InlineKeyboardButton("🔄 ریست بازی", callback_data="admin_reset_game"),
+        InlineKeyboardButton("📊 آمار بازی", callback_data="admin_stats"),
+    ]
+    
+    keyboard = create_inline_keyboard(buttons, columns=2)
+    
+    await update.message.reply_text(
+        "👑 **پنل مدیریت جنگ جهانی باستان**\n\n"
+        "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE, data):
+    """مدیریت دستورات ادمین"""
+    query = update.callback_query
+    
+    if data == "admin_add_player":
+        await show_ai_countries_for_assignment(update, context)
+    
+    elif data == "admin_start_season":
+        await start_new_season(update, context)
+    
+    elif data == "admin_end_season":
+        await end_current_season(update, context)
+    
+    elif data == "admin_broadcast":
+        context.user_data['awaiting_broadcast'] = True
+        await query.edit_message_text(
+            "لطفاً پیام عمومی خود را برای همه بازیکنان ارسال کنید:",
+            parse_mode='Markdown'
+        )
+    
+    elif data == "admin_reset_game":
+        await reset_game_confirmation(update, context)
+    
+    elif data == "admin_stats":
+        await show_admin_stats(update, context)
+
+async def show_ai_countries_for_assignment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لیست کشورهای AI برای اختصاص"""
+    ai_countries = db.get_ai_countries()
+    
+    if not ai_countries:
+        await update.callback_query.message.reply_text("❌ همه کشورها در اختیار بازیکنان هستند!")
+        return
+    
+    buttons = []
+    for country in ai_countries:
+        buttons.append(
+            InlineKeyboardButton(
+                f"{country['color']} {country['name']}",
+                callback_data=f"assign_country_{country['id']}"
+            )
+        )
+    
+    # اضافه کردن دکمه بازگشت
+    buttons.append(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_panel"))
+    
+    keyboard = create_inline_keyboard(buttons, columns=2)
+    
+    await update.callback_query.edit_message_text(
+        "🤖 **کشورهای تحت کنترل AI:**\n\n"
+        "لطفاً کشوری را برای اختصاص به بازیکن انتخاب کنید:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def start_new_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """شروع فصل جدید"""
+    # پیدا کردن شماره فصل بعدی
+    cursor = db.conn.cursor()
+    cursor.execute('SELECT MAX(season_number) as max_season FROM seasons')
+    result = cursor.fetchone()
+    next_season = (result['max_season'] or 0) + 1
+    
+    # شروع فصل جدید
+    db.start_new_season(next_season)
+    
+    # ارسال پیام به کانال خبری (شبیه‌سازی)
+    news_message = (
+        f"🎉 **شروع فصل جدید جنگ‌های باستان!**\n\n"
+        f"📅 فصل {next_season} آغاز شد!\n"
+        f"⏰ تاریخ شروع: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+        f"🌍 فرمانروایان، آماده نبرد شوید!\n"
+        f"👑 برنده نهایی فصل {next_season} کیست؟\n\n"
+        f"ساخته شده توسط @amele55\n"
+        f"ورژن 2 ربات"
+    )
+    
+    await update.callback_query.message.reply_text(
+        f"✅ فصل {next_season} با موفقیت آغاز شد!\n\n{news_message}",
+        parse_mode='Markdown'
+    )
+
+async def end_current_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """پایان فصل جاری"""
+    active_season = db.get_active_season()
+    
+    if not active_season:
+        await update.callback_query.message.reply_text("❌ هیچ فصلی فعال نیست!")
+        return
+    
+    # پیدا کردن برنده (قدرتمندترین کشور انسانی)
+    cursor = db.conn.cursor()
+    cursor.execute('''
+    SELECT c.id as country_id, c.name as country_name, 
+           p.user_id as player_id, a.power
+    FROM countries c
+    JOIN players p ON c.id = p.country_id
+    JOIN army a ON c.id = a.country_id
+    WHERE c.controller = 'HUMAN'
+    ORDER BY a.power DESC
+    LIMIT 1
+    ''')
+    
+    winner = cursor.fetchone()
+    
+    if winner:
+        # به‌روزرسانی فصل
+        cursor.execute('''
+        UPDATE seasons 
+        SET end_date = CURRENT_TIMESTAMP,
+            winner_country_id = ?,
+            winner_player_id = ?,
+            is_active = 0
+        WHERE id = ?
+        ''', (winner['country_id'], winner['player_id'], active_season['id']))
+        db.conn.commit()
+        
+        # پیام پایان فصل
+        news_message = (
+            f"🏆 **پایان فصل جنگ‌های باستان**\n\n"
+            f"📅 فصل {active_season['season_number']} به پایان رسید!\n\n"
+            f"👑 **فاتح نهایی جهان:**\n"
+            f"🏛️ کشور: {winner['country_name']}\n"
+            f"👤 بازیکن: {winner['player_id']}\n\n"
+            f"ساخته شده توسط @amele55\n"
+            f"منتظر فصل بعد باشید\n"
+            f"ورژن 2 ربات"
+        )
+        
+        await update.callback_query.message.reply_text(
+            f"✅ فصل {active_season['season_number']} با موفقیت پایان یافت!\n\n{news_message}",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.callback_query.message.reply_text("❌ هیچ بازیکن انسانی برای انتخاب برنده وجود ندارد!")
+
+async def reset_game_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تأیید ریست بازی"""
+    buttons = [
+        InlineKeyboardButton("✅ بله، ریست کن", callback_data="admin_confirm_reset"),
+        InlineKeyboardButton("❌ خیر، لغو", callback_data="admin_panel"),
+    ]
+    
+    keyboard = InlineKeyboardMarkup([buttons])
+    
+    await update.callback_query.edit_message_text(
+        "⚠️ **هشدار: ریست کامل بازی**\n\n"
+        "آیا مطمئن هستید که می‌خواهید کل بازی را ریست کنید؟\n"
+        "❗ این عمل غیرقابل بازگشت است و همه داده‌ها پاک می‌شوند!",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+async def show_admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش آمار مدیریت"""
+    cursor = db.conn.cursor()
+    
+    # تعداد بازیکنان
+    cursor.execute('SELECT COUNT(*) as count FROM players WHERE is_active = 1')
+    player_count = cursor.fetchone()['count']
+    
+    # تعداد کشورها
+    cursor.execute('SELECT COUNT(*) as count FROM countries WHERE is_active = 1')
+    country_count = cursor.fetchone()['count']
+    
+    # تعداد AI
+    cursor.execute('SELECT COUNT(*) as count FROM countries WHERE controller = "AI" AND is_active = 1')
+    ai_count = cursor.fetchone()['count']
+    
+    # تعداد HUMAN
+    cursor.execute('SELECT COUNT(*) as count FROM countries WHERE controller = "HUMAN" AND is_active = 1')
+    human_count = cursor.fetchone()['count']
+    
+    # فصل فعال
+    active_season = db.get_active_season()
+    season_info = f"فصل {active_season['season_number']}" if active_season else "هیچ فصل فعالی"
+    
+    stats_text = (
+        f"📊 **آمار مدیریت جنگ جهانی باستان**\n\n"
+        f"👥 بازیکنان انسانی: {player_count}\n"
+        f"🌍 کل کشورها: {country_count}\n"
+        f"🤖 کشورهای AI: {ai_count}\n"
+        f"👤 کشورهای انسانی: {human_count}\n"
+        f"📅 وضعیت فصل: {season_info}\n\n"
+        f"🔄 آخرین به‌روزرسانی: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    
+    await update.callback_query.edit_message_text(
+        stats_text,
+        parse_mode='Markdown'
+    )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """مدیریت پیام‌های متنی"""
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    # بررسی اگر مالک در حال ارسال آدی بازیکن است
+    if user_id == OWNER_ID and 'selected_country' in context.user_data:
+        try:
+            target_user_id = int(text)
+            country_id = context.user_data['selected_country']
+            
+            # اختصاص کشور به بازیکن
+            target_user = await context.bot.get_chat(target_user_id)
+            
+            success = db.assign_country_to_player(
+                country_id,
+                target_user_id,
+                target_user.username,
+                target_user.full_name
+            )
+            
+            if success:
+                await update.message.reply_text(
+                    f"✅ کشور با موفقیت به بازیکن اختصاص داده شد!\n"
+                    f"👤 بازیکن: {target_user.full_name}\n"
+                    f"🆔 آیدی: {target_user_id}"
+                )
+                
+                # اطلاع به بازیکن
+                try:
+                    await context.bot.send_message(
+                        target_user_id,
+                        f"🎉 تبریک! شما اکنون فرمانروای یک کشور باستانی هستید!\n\n"
+                        f"برای شروع بازی از دستور /start استفاده کنید."
+                    )
+                except:
+                    pass
+            else:
+                await update.message.reply_text("❌ خطا در اختصاص کشور!")
+            
+            # پاک کردن حالت
+            del context.user_data['selected_country']
+            
+        except ValueError:
+            await update.message.reply_text("❌ لطفاً یک آیدی عددی معتبر وارد کنید!")
+        except Exception as e:
+            await update.message.reply_text(f"❌ خطا: {str(e)}")
+    
+    # بررسی اگر مالک در حال ارسال پیام عمومی است
+    elif user_id == OWNER_ID and context.user_data.get('awaiting_broadcast'):
+        # ارسال پیام به همه بازیکنان
+        players = db.get_all_players()
+        
+        success_count = 0
+        for player in players:
+            try:
+                await context.bot.send_message(
+                    player['user_id'],
+                    f"📢 **پیام عمومی از مدیریت:**\n\n{text}"
+                )
+                success_count += 1
+            except:
+                pass
+        
+        await update.message.reply_text(
+            f"✅ پیام به {success_count} بازیکن ارسال شد."
+        )
+        
+        # پاک کردن حالت
+        context.user_data['awaiting_broadcast'] = False
+    
+    else:
+        # پاسخ به پیام‌های دیگر
+        await update.message.reply_text(
+            "برای دسترسی به منوی بازی از /start استفاده کنید.\n"
+            "برای مدیریت (مالک) از /admin استفاده کنید."
+        )
+
+def ai_scheduler():
+    """زمان‌بند برای اجرای خودکار AI"""
+    scheduler = BackgroundScheduler()
+    
+    def process_ai_decisions():
+        try:
+            decisions = game.process_all_ai_decisions()
+            if decisions:
+                logger.info(f"AI decisions processed: {len(decisions)}")
+                # می‌توانید این تصمیمات را به کانال خبری ارسال کنید
+        except Exception as e:
+            logger.error(f"Error in AI scheduler: {e}")
+    
+    # اجرای هر 5 دقیقه
+    scheduler.add_job(process_ai_decisions, 'interval', minutes=5)
+    scheduler.start()
+    
+    return scheduler
+
+def setup_application():
+    """تنظیم و راه‌اندازی اپلیکیشن تلگرام"""
+    # ایجاد اپلیکیشن
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # اضافه کردن هندلرهای دستورات
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("admin", admin_panel))
+    
+    # اضافه کردن هندلرهای دکمه‌ها
+    application.add_handler(CallbackQueryHandler(button_callback_handler))
+    
+    # اضافه کردن هندلر پیام‌های متنی
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    return application
+
+@app.route('/')
+def home():
+    return "🤖 Ancient War Bot v2 is running!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Webhook endpoint برای تلگرام"""
+    if request.headers.get('content-type') == 'application/json':
+        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+        telegram_app.update_queue.put(update)
+        return 'OK'
+    return 'Bad Request', 400
+
+def main():
+    """تابع اصلی اجرای ربات"""
+    global telegram_app
+    
+    # راه‌اندازی AI Scheduler
+    scheduler = ai_scheduler()
+    
+    # راه‌اندازی اپلیکیشن تلگرام
+    telegram_app = setup_application()
+    
+    if WEBHOOK_URL:
+        # حالت Webhook (برای Render)
+        logger.info("Starting in Webhook mode...")
+        
+        # تنظیم Webhook
+        telegram_app.bot.set_webhook(
+            url=f"{WEBHOOK_URL}/webhook",
+            allowed_updates=Update.ALL_TYPES
+        )
+        
+        # اجرای Flask app
+        app.run(host=LISTEN, port=PORT)
+    else:
+        # حالت Polling (برای توسعه)
+        logger.info("Starting in Polling mode...")
+        telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # توقف زمان‌بند
+    scheduler.shutdown()
+
+if __name__ == '__main__':
+    main()
