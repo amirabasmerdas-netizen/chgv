@@ -5,12 +5,10 @@ from datetime import datetime
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, CallbackContext
+    Updater, CommandHandler, CallbackQueryHandler,
+    MessageHandler, Filters, CallbackContext
 )
 from apscheduler.schedulers.background import BackgroundScheduler
-import threading
-import time
 
 # شبیه‌سازی imghdr برای پایتون 3.13
 if sys.version_info >= (3, 13):
@@ -42,7 +40,7 @@ if sys.version_info >= (3, 13):
     imghdr_module.what = what
     sys.modules['imghdr'] = imghdr_module
 
-# حالا می‌توانیم config را ایمپورت کنیم
+# ایمپورت config
 try:
     from config import BOT_TOKEN, OWNER_ID, PORT, LISTEN, WEBHOOK_URL
     from database import Database
@@ -69,17 +67,17 @@ try:
     db = Database()
     game = GameLogic()
     advisor = Advisor()
-except:
+except Exception as e:
     db = None
     game = None
     advisor = None
-    logger.warning("ایجاد اشیاء بازی با مشکل مواجه شد")
+    logger.warning(f"ایجاد اشیاء بازی با مشکل مواجه شد: {e}")
 
 # Flask app برای Webhook
 app = Flask(__name__)
 
-# ذخیره اپلیکیشن تلگرام
-telegram_app = None
+# ذخیره updater تلگرام
+updater = None
 
 def create_inline_keyboard(buttons_list, columns=2):
     """ایجاد کیبورد اینلاین از لیست دکمه‌ها"""
@@ -97,7 +95,7 @@ def create_inline_keyboard(buttons_list, columns=2):
     
     return InlineKeyboardMarkup(keyboard)
 
-async def start_command(update: Update, context: CallbackContext):
+def start_command(update: Update, context: CallbackContext):
     """دستور /start"""
     try:
         user = update.effective_user
@@ -111,30 +109,30 @@ async def start_command(update: Update, context: CallbackContext):
         
         if player_country:
             # نمایش داشبورد بازیکن
-            await show_player_dashboard(update, context, user_id)
+            show_player_dashboard(update, context, user_id)
         else:
             # خوش‌آمدگویی به کاربر جدید
-            await update.message.reply_text(
-                f"👑 خوش آمدی {user.full_name}!\n\n"
+            update.message.reply_text(
+                text=f"👑 خوش آمدی {user.full_name}!\n\n"
                 "به بازی استراتژیک **جنگ جهانی باستان** خوش آمدی!\n"
                 "در حال حاضر شما کشوری ندارید.\n\n"
                 "برای افزودن بازیکن، مالک ربات باید از طریق منو مدیریت اقدام کند."
             )
     except Exception as e:
         logger.error(f"خطا در start_command: {e}")
-        await update.message.reply_text("خطا در پردازش درخواست!")
+        update.message.reply_text("خطا در پردازش درخواست!")
 
-async def show_player_dashboard(update: Update, context: CallbackContext, user_id):
+def show_player_dashboard(update: Update, context: CallbackContext, user_id):
     """نمایش داشبورد بازیکن"""
     try:
         if not db:
-            await update.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         player_country = db.get_player_country(user_id)
         
         if not player_country:
-            await update.message.reply_text("شما کشوری ندارید!")
+            update.message.reply_text("شما کشوری ندارید!")
             return
         
         # دریافت اطلاعات
@@ -175,82 +173,82 @@ async def show_player_dashboard(update: Update, context: CallbackContext, user_i
         keyboard = create_inline_keyboard(buttons, columns=2)
         
         if update.callback_query:
-            await update.callback_query.edit_message_text(
-                dashboard_text,
+            update.callback_query.edit_message_text(
+                text=dashboard_text,
                 reply_markup=keyboard,
                 parse_mode='Markdown'
             )
         else:
-            await update.message.reply_text(
-                dashboard_text,
+            update.message.reply_text(
+                text=dashboard_text,
                 reply_markup=keyboard,
                 parse_mode='Markdown'
             )
     except Exception as e:
         logger.error(f"خطا در show_player_dashboard: {e}")
-        await update.message.reply_text("خطا در نمایش داشبورد!")
+        update.message.reply_text("خطا در نمایش داشبورد!")
 
-async def button_callback_handler(update: Update, context: CallbackContext):
+def button_callback_handler(update: Update, context: CallbackContext):
     """مدیریت کلیک روی دکمه‌های اینلاین"""
     try:
         query = update.callback_query
-        await query.answer()
+        query.answer()
         
         user_id = query.from_user.id
         data = query.data
         
         if data == "refresh_dashboard":
-            await show_player_dashboard(update, context, user_id)
+            show_player_dashboard(update, context, user_id)
         
         elif data == "upgrade_army":
-            await upgrade_army(update, context, user_id)
+            upgrade_army(update, context, user_id)
         
         elif data == "collect_resources":
-            await collect_resources(update, context, user_id)
+            collect_resources(update, context, user_id)
         
         elif data == "get_advice":
-            await send_advisor_advice(update, context, user_id)
+            send_advisor_advice(update, context, user_id)
         
         elif data == "show_ranking":
-            await show_ranking(update, context)
+            show_ranking(update, context)
         
         elif data == "show_alliances":
-            await show_alliances(update, context, user_id)
+            show_alliances(update, context, user_id)
         
         elif data.startswith("assign_country_"):
             if user_id == OWNER_ID:
                 country_id = int(data.split("_")[2])
                 context.user_data['selected_country'] = country_id
-                await query.edit_message_text(
-                    "کشور انتخاب شد. لطفاً آیدی عددی بازیکن را ارسال کنید:",
+                query.edit_message_text(
+                    text="کشور انتخاب شد. لطفاً آیدی عددی بازیکن را ارسال کنید:",
                     parse_mode='Markdown'
                 )
         
         elif data.startswith("admin_"):
             if user_id == OWNER_ID:
-                await handle_admin_commands(update, context, data)
+                handle_admin_commands(update, context, data)
     
     except Exception as e:
         logger.error(f"خطا در button_callback_handler: {e}")
 
-async def upgrade_army(update: Update, context: CallbackContext, user_id):
+def upgrade_army(update: Update, context: CallbackContext, user_id):
     """ارتقای ارتش"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         player_country = db.get_player_country(user_id)
         
         if not player_country:
-            await update.callback_query.message.reply_text("شما کشوری ندارید!")
+            update.callback_query.message.reply_text("شما کشوری ندارید!")
             return
         
         army = db.get_country_army(player_country['id'])
         resources = db.get_country_resources(player_country['id'])
         
         if not army or not resources:
-            await update.callback_query.message.reply_text("اطلاعات ارتش یا منابع یافت نشد!")
+            update.callback_query.message.reply_text("اطلاعات ارتش یا منابع یافت نشد!")
             return
         
         # هزینه ارتقا
@@ -268,31 +266,31 @@ async def upgrade_army(update: Update, context: CallbackContext, user_id):
             # ارتقا ارتش
             db.upgrade_army_level(player_country['id'], upgrade_cost)
             
-            await update.callback_query.message.reply_text(
-                f"✅ ارتش {player_country['name']} به سطح {army['level'] + 1} ارتقا یافت!\n"
+            update.callback_query.message.reply_text(
+                text=f"✅ ارتش {player_country['name']} به سطح {army['level'] + 1} ارتقا یافت!\n"
                 f"💰 هزینه: طلا:{upgrade_cost['gold']} آهن:{upgrade_cost['iron']} غذا:{upgrade_cost['food']}"
             )
         else:
-            await update.callback_query.message.reply_text(
-                f"❌ منابع کافی برای ارتقا ندارید!\n"
+            update.callback_query.message.reply_text(
+                text=f"❌ منابع کافی برای ارتقا ندارید!\n"
                 f"💰 نیاز: طلا:{upgrade_cost['gold']} آهن:{upgrade_cost['iron']} غذا:{upgrade_cost['food']}\n"
                 f"💰 دارایی: طلا:{resources['gold']} آهن:{resources['iron']} غذا:{resources['food']}"
             )
     except Exception as e:
         logger.error(f"خطا در upgrade_army: {e}")
-        await update.callback_query.message.reply_text("خطا در ارتقای ارتش!")
+        update.callback_query.message.reply_text("خطا در ارتقای ارتش!")
 
-async def collect_resources(update: Update, context: CallbackContext, user_id):
+def collect_resources(update: Update, context: CallbackContext, user_id):
     """جمع‌آوری منابع"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         player_country = db.get_player_country(user_id)
         
         if not player_country:
-            await update.callback_query.message.reply_text("شما کشوری ندارید!")
+            update.callback_query.message.reply_text("شما کشوری ندارید!")
             return
         
         # افزایش منابع تصادفی
@@ -305,8 +303,8 @@ async def collect_resources(update: Update, context: CallbackContext, user_id):
         
         db.update_resources(player_country['id'], resource_gains)
         
-        await update.callback_query.message.reply_text(
-            f"✅ منابع جمع‌آوری شد!\n"
+        update.callback_query.message.reply_text(
+            text=f"✅ منابع جمع‌آوری شد!\n"
             f"🪙 طلا: +{resource_gains['gold']}\n"
             f"⚒️ آهن: +{resource_gains['iron']}\n"
             f"🪨 سنگ: +{resource_gains['stone']}\n"
@@ -314,30 +312,30 @@ async def collect_resources(update: Update, context: CallbackContext, user_id):
         )
     except Exception as e:
         logger.error(f"خطا در collect_resources: {e}")
-        await update.callback_query.message.reply_text("خطا در جمع‌آوری منابع!")
+        update.callback_query.message.reply_text("خطا در جمع‌آوری منابع!")
 
-async def send_advisor_advice(update: Update, context: CallbackContext, user_id):
+def send_advisor_advice(update: Update, context: CallbackContext, user_id):
     """ارسال مشاوره وزیر"""
     try:
         if not advisor:
-            await update.callback_query.message.reply_text("سیستم مشاوره در دسترس نیست!")
+            update.callback_query.message.reply_text("سیستم مشاوره در دسترس نیست!")
             return
             
         advice = advisor.send_advice_to_player(user_id)
         
         if advice:
-            await update.callback_query.message.reply_text(advice, parse_mode='Markdown')
+            update.callback_query.message.reply_text(text=advice, parse_mode='Markdown')
         else:
-            await update.callback_query.message.reply_text("در حال حاضر مشاوره‌ای موجود نیست.")
+            update.callback_query.message.reply_text("در حال حاضر مشاوره‌ای موجود نیست.")
     except Exception as e:
         logger.error(f"خطا در send_advisor_advice: {e}")
-        await update.callback_query.message.reply_text("خطا در دریافت مشاوره!")
+        update.callback_query.message.reply_text("خطا در دریافت مشاوره!")
 
-async def show_ranking(update: Update, context: CallbackContext):
+def show_ranking(update: Update, context: CallbackContext):
     """نمایش رده‌بندی"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         cursor = db.conn.cursor()
@@ -354,7 +352,7 @@ async def show_ranking(update: Update, context: CallbackContext):
         rankings = cursor.fetchall()
         
         if not rankings:
-            await update.callback_query.message.reply_text("هنوز رده‌بندی‌ای موجود نیست.")
+            update.callback_query.message.reply_text("هنوز رده‌بندی‌ای موجود نیست.")
             return
         
         ranking_text = "🏆 **رده‌بندی قدرتمندترین کشورها:**\n\n"
@@ -371,22 +369,22 @@ async def show_ranking(update: Update, context: CallbackContext):
                 f"   ⚡ قدرت: {country['power']} | 🏆 سطح: {country['level']}\n"
             )
         
-        await update.callback_query.message.reply_text(ranking_text, parse_mode='Markdown')
+        update.callback_query.message.reply_text(text=ranking_text, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"خطا در show_ranking: {e}")
-        await update.callback_query.message.reply_text("خطا در نمایش رده‌بندی!")
+        update.callback_query.message.reply_text("خطا در نمایش رده‌بندی!")
 
-async def show_alliances(update: Update, context: CallbackContext, user_id):
+def show_alliances(update: Update, context: CallbackContext, user_id):
     """نمایش اتحادها"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         player_country = db.get_player_country(user_id)
         
         if not player_country:
-            await update.callback_query.message.reply_text("شما کشوری ندارید!")
+            update.callback_query.message.reply_text("شما کشوری ندارید!")
             return
         
         cursor = db.conn.cursor()
@@ -420,18 +418,18 @@ async def show_alliances(update: Update, context: CallbackContext, user_id):
                     f"   📊 رابطه: {relation_text} | 💪 قدرت: {alliance['strength']}%\n"
                 )
         
-        await update.callback_query.message.reply_text(alliance_text, parse_mode='Markdown')
+        update.callback_query.message.reply_text(text=alliance_text, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"خطا در show_alliances: {e}")
-        await update.callback_query.message.reply_text("خطا در نمایش اتحادها!")
+        update.callback_query.message.reply_text("خطا در نمایش اتحادها!")
 
 # ------------------ ADMIN COMMANDS ------------------
 
-async def admin_panel(update: Update, context: CallbackContext):
+def admin_panel(update: Update, context: CallbackContext):
     """پنل مدیریت برای مالک"""
     try:
         if update.effective_user.id != OWNER_ID:
-            await update.message.reply_text("❌ فقط مالک ربات می‌تواند از این دستور استفاده کند!")
+            update.message.reply_text("❌ فقط مالک ربات می‌تواند از این دستور استفاده کند!")
             return
         
         buttons = [
@@ -445,64 +443,64 @@ async def admin_panel(update: Update, context: CallbackContext):
         
         keyboard = create_inline_keyboard(buttons, columns=2)
         
-        await update.message.reply_text(
-            "👑 **پنل مدیریت جنگ جهانی باستان**\n\n"
+        update.message.reply_text(
+            text="👑 **پنل مدیریت جنگ جهانی باستان**\n\n"
             "لطفاً یکی از گزینه‌ها را انتخاب کنید:",
             reply_markup=keyboard,
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.error(f"خطا در admin_panel: {e}")
-        await update.message.reply_text("خطا در نمایش پنل مدیریت!")
+        update.message.reply_text("خطا در نمایش پنل مدیریت!")
 
-async def handle_admin_commands(update: Update, context: CallbackContext, data):
+def handle_admin_commands(update: Update, context: CallbackContext, data):
     """مدیریت دستورات ادمین"""
     try:
         query = update.callback_query
         
         if data == "admin_add_player":
-            await show_ai_countries_for_assignment(update, context)
+            show_ai_countries_for_assignment(update, context)
         
         elif data == "admin_start_season":
-            await start_new_season(update, context)
+            start_new_season(update, context)
         
         elif data == "admin_end_season":
-            await end_current_season(update, context)
+            end_current_season(update, context)
         
         elif data == "admin_broadcast":
             context.user_data['awaiting_broadcast'] = True
-            await query.edit_message_text(
-                "لطفاً پیام عمومی خود را برای همه بازیکنان ارسال کنید:",
+            query.edit_message_text(
+                text="لطفاً پیام عمومی خود را برای همه بازیکنان ارسال کنید:",
                 parse_mode='Markdown'
             )
         
         elif data == "admin_reset_game":
-            await reset_game_confirmation(update, context)
+            reset_game_confirmation(update, context)
         
         elif data == "admin_stats":
-            await show_admin_stats(update, context)
+            show_admin_stats(update, context)
     
     except Exception as e:
         logger.error(f"خطا در handle_admin_commands: {e}")
 
-async def show_ai_countries_for_assignment(update: Update, context: CallbackContext):
+def show_ai_countries_for_assignment(update: Update, context: CallbackContext):
     """نمایش لیست کشورهای AI برای اختصاص"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         ai_countries = db.get_ai_countries()
         
         if not ai_countries:
-            await update.callback_query.message.reply_text("❌ همه کشورها در اختیار بازیکنان هستند!")
+            update.callback_query.message.reply_text("❌ همه کشورها در اختیار بازیکنان هستند!")
             return
         
         buttons = []
         for country in ai_countries:
             buttons.append(
                 InlineKeyboardButton(
-                    f"{country['color']} {country['name']}",
+                    text=f"{country['color']} {country['name']}",
                     callback_data=f"assign_country_{country['id']}"
                 )
             )
@@ -512,8 +510,8 @@ async def show_ai_countries_for_assignment(update: Update, context: CallbackCont
         
         keyboard = create_inline_keyboard(buttons, columns=2)
         
-        await update.callback_query.edit_message_text(
-            "🤖 **کشورهای تحت کنترل AI:**\n\n"
+        update.callback_query.edit_message_text(
+            text="🤖 **کشورهای تحت کنترل AI:**\n\n"
             "لطفاً کشوری را برای اختصاص به بازیکن انتخاب کنید:",
             reply_markup=keyboard,
             parse_mode='Markdown'
@@ -521,11 +519,11 @@ async def show_ai_countries_for_assignment(update: Update, context: CallbackCont
     except Exception as e:
         logger.error(f"خطا در show_ai_countries_for_assignment: {e}")
 
-async def start_new_season(update: Update, context: CallbackContext):
+def start_new_season(update: Update, context: CallbackContext):
     """شروع فصل جدید"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         # پیدا کردن شماره فصل بعدی
@@ -548,25 +546,25 @@ async def start_new_season(update: Update, context: CallbackContext):
             f"ورژن 2 ربات"
         )
         
-        await update.callback_query.message.reply_text(
-            f"✅ فصل {next_season} با موفقیت آغاز شد!\n\n{news_message}",
+        update.callback_query.message.reply_text(
+            text=f"✅ فصل {next_season} با موفقیت آغاز شد!\n\n{news_message}",
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.error(f"خطا در start_new_season: {e}")
-        await update.callback_query.message.reply_text("خطا در شروع فصل جدید!")
+        update.callback_query.message.reply_text("خطا در شروع فصل جدید!")
 
-async def end_current_season(update: Update, context: CallbackContext):
+def end_current_season(update: Update, context: CallbackContext):
     """پایان فصل جاری"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         active_season = db.get_active_season()
         
         if not active_season:
-            await update.callback_query.message.reply_text("❌ هیچ فصلی فعال نیست!")
+            update.callback_query.message.reply_text("❌ هیچ فصلی فعال نیست!")
             return
         
         # پیدا کردن برنده (قدرتمندترین کشور انسانی)
@@ -608,17 +606,17 @@ async def end_current_season(update: Update, context: CallbackContext):
                 f"ورژن 2 ربات"
             )
             
-            await update.callback_query.message.reply_text(
-                f"✅ فصل {active_season['season_number']} با موفقیت پایان یافت!\n\n{news_message}",
+            update.callback_query.message.reply_text(
+                text=f"✅ فصل {active_season['season_number']} با موفقیت پایان یافت!\n\n{news_message}",
                 parse_mode='Markdown'
             )
         else:
-            await update.callback_query.message.reply_text("❌ هیچ بازیکن انسانی برای انتخاب برنده وجود ندارد!")
+            update.callback_query.message.reply_text("❌ هیچ بازیکن انسانی برای انتخاب برنده وجود ندارد!")
     except Exception as e:
         logger.error(f"خطا در end_current_season: {e}")
-        await update.callback_query.message.reply_text("خطا در پایان فصل!")
+        update.callback_query.message.reply_text("خطا در پایان فصل!")
 
-async def reset_game_confirmation(update: Update, context: CallbackContext):
+def reset_game_confirmation(update: Update, context: CallbackContext):
     """تأیید ریست بازی"""
     try:
         buttons = [
@@ -628,8 +626,8 @@ async def reset_game_confirmation(update: Update, context: CallbackContext):
         
         keyboard = InlineKeyboardMarkup([buttons])
         
-        await update.callback_query.edit_message_text(
-            "⚠️ **هشدار: ریست کامل بازی**\n\n"
+        update.callback_query.edit_message_text(
+            text="⚠️ **هشدار: ریست کامل بازی**\n\n"
             "آیا مطمئن هستید که می‌خواهید کل بازی را ریست کنید؟\n"
             "❗ این عمل غیرقابل بازگشت است و همه داده‌ها پاک می‌شوند!",
             reply_markup=keyboard,
@@ -638,11 +636,11 @@ async def reset_game_confirmation(update: Update, context: CallbackContext):
     except Exception as e:
         logger.error(f"خطا در reset_game_confirmation: {e}")
 
-async def show_admin_stats(update: Update, context: CallbackContext):
+def show_admin_stats(update: Update, context: CallbackContext):
     """نمایش آمار مدیریت"""
     try:
         if not db:
-            await update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
+            update.callback_query.message.reply_text("خطا در اتصال به پایگاه داده!")
             return
             
         cursor = db.conn.cursor()
@@ -677,15 +675,15 @@ async def show_admin_stats(update: Update, context: CallbackContext):
             f"🔄 آخرین به‌روزرسانی: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         
-        await update.callback_query.edit_message_text(
-            stats_text,
+        update.callback_query.edit_message_text(
+            text=stats_text,
             parse_mode='Markdown'
         )
     except Exception as e:
         logger.error(f"خطا در show_admin_stats: {e}")
-        await update.callback_query.message.reply_text("خطا در نمایش آمار!")
+        update.callback_query.message.reply_text("خطا در نمایش آمار!")
 
-async def handle_message(update: Update, context: CallbackContext):
+def handle_message(update: Update, context: CallbackContext):
     """مدیریت پیام‌های متنی"""
     try:
         user_id = update.effective_user.id
@@ -698,49 +696,39 @@ async def handle_message(update: Update, context: CallbackContext):
                 country_id = context.user_data['selected_country']
                 
                 if not db:
-                    await update.message.reply_text("خطا در اتصال به پایگاه داده!")
+                    update.message.reply_text("خطا در اتصال به پایگاه داده!")
                     return
                 
                 # اختصاص کشور به بازیکن
                 try:
-                    target_user = await context.bot.get_chat(target_user_id)
-                    
+                    # در نسخه 13.15 نمی‌توانیم از await استفاده کنیم
+                    # یک راه ساده‌تر
                     success = db.assign_country_to_player(
                         country_id,
                         target_user_id,
-                        target_user.username,
-                        target_user.full_name
+                        f"user_{target_user_id}",  # username موقت
+                        f"Player_{target_user_id}"  # full_name موقت
                     )
                     
                     if success:
-                        await update.message.reply_text(
-                            f"✅ کشور با موفقیت به بازیکن اختصاص داده شد!\n"
-                            f"👤 بازیکن: {target_user.full_name}\n"
-                            f"🆔 آیدی: {target_user_id}"
+                        update.message.reply_text(
+                            text=f"✅ کشور با موفقیت به بازیکن اختصاص داده شد!\n"
+                            f"🆔 آیدی بازیکن: {target_user_id}\n\n"
+                            f"به بازیکن بگویید از دستور /start استفاده کند."
                         )
-                        
-                        # اطلاع به بازیکن
-                        try:
-                            await context.bot.send_message(
-                                target_user_id,
-                                f"🎉 تبریک! شما اکنون فرمانروای یک کشور باستانی هستید!\n\n"
-                                f"برای شروع بازی از دستور /start استفاده کنید."
-                            )
-                        except:
-                            pass
                     else:
-                        await update.message.reply_text("❌ خطا در اختصاص کشور!")
+                        update.message.reply_text("❌ خطا در اختصاص کشور!")
                     
                     # پاک کردن حالت
                     del context.user_data['selected_country']
                     
                 except Exception as e:
-                    await update.message.reply_text(f"❌ خطا در دریافت اطلاعات کاربر: {str(e)}")
+                    update.message.reply_text(f"❌ خطا در دریافت اطلاعات کاربر: {str(e)}")
                 
             except ValueError:
-                await update.message.reply_text("❌ لطفاً یک آیدی عددی معتبر وارد کنید!")
+                update.message.reply_text("❌ لطفاً یک آیدی عددی معتبر وارد کنید!")
             except Exception as e:
-                await update.message.reply_text(f"❌ خطا: {str(e)}")
+                update.message.reply_text(f"❌ خطا: {str(e)}")
         
         # بررسی اگر مالک در حال ارسال پیام عمومی است
         elif user_id == OWNER_ID and context.user_data.get('awaiting_broadcast'):
@@ -751,33 +739,33 @@ async def handle_message(update: Update, context: CallbackContext):
                 success_count = 0
                 for player in players:
                     try:
-                        await context.bot.send_message(
-                            player['user_id'],
-                            f"📢 **پیام عمومی از مدیریت:**\n\n{text}"
+                        context.bot.send_message(
+                            chat_id=player['user_id'],
+                            text=f"📢 **پیام عمومی از مدیریت:**\n\n{text}"
                         )
                         success_count += 1
                     except:
                         pass
                 
-                await update.message.reply_text(
-                    f"✅ پیام به {success_count} بازیکن ارسال شد."
+                update.message.reply_text(
+                    text=f"✅ پیام به {success_count} بازیکن ارسال شد."
                 )
             else:
-                await update.message.reply_text("خطا در اتصال به پایگاه داده!")
+                update.message.reply_text("خطا در اتصال به پایگاه داده!")
             
             # پاک کردن حالت
             context.user_data['awaiting_broadcast'] = False
         
         else:
             # پاسخ به پیام‌های دیگر
-            await update.message.reply_text(
-                "برای دسترسی به منوی بازی از /start استفاده کنید.\n"
+            update.message.reply_text(
+                text="برای دسترسی به منوی بازی از /start استفاده کنید.\n"
                 "برای مدیریت (مالک) از /admin استفاده کنید."
             )
     
     except Exception as e:
         logger.error(f"خطا در handle_message: {e}")
-        await update.message.reply_text("خطا در پردازش پیام!")
+        update.message.reply_text("خطا در پردازش پیام!")
 
 def ai_scheduler():
     """زمان‌بند برای اجرای خودکار AI"""
@@ -798,62 +786,63 @@ def ai_scheduler():
     
     return scheduler
 
-def setup_application():
-    """تنظیم و راه‌اندازی اپلیکیشن تلگرام"""
-    # ایجاد اپلیکیشن
-    application = Application.builder().token(BOT_TOKEN).build()
+def setup_updater():
+    """تنظیم و راه‌اندازی updater"""
+    updater_instance = Updater(token=BOT_TOKEN, use_context=True)
+    dp = updater_instance.dispatcher
     
     # اضافه کردن هندلرهای دستورات
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("admin", admin_panel))
+    dp.add_handler(CommandHandler("start", start_command))
+    dp.add_handler(CommandHandler("admin", admin_panel))
     
     # اضافه کردن هندلرهای دکمه‌ها
-    application.add_handler(CallbackQueryHandler(button_callback_handler))
+    dp.add_handler(CallbackQueryHandler(button_callback_handler))
     
     # اضافه کردن هندلر پیام‌های متنی
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
-    return application
+    return updater_instance
 
 @app.route('/')
 def home():
-    return "🤖 Ancient War Bot v2 is running on Python 3.13!"
+    return "🤖 Ancient War Bot v2 is running on Python 3.13 with python-telegram-bot 13.15!"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Webhook endpoint برای تلگرام"""
+    global updater
+    
     if request.headers.get('content-type') == 'application/json':
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        telegram_app.update_queue.put(update)
+        json_str = request.get_data().decode('UTF-8')
+        update = Update.de_json(json_str, updater.bot)
+        updater.dispatcher.process_update(update)
         return 'OK'
     return 'Bad Request', 400
 
 def main():
     """تابع اصلی اجرای ربات"""
-    global telegram_app
+    global updater
     
     # راه‌اندازی AI Scheduler
     scheduler = ai_scheduler()
     
-    # راه‌اندازی اپلیکیشن تلگرام
-    telegram_app = setup_application()
+    # راه‌اندازی updater
+    updater = setup_updater()
     
-    if WEBHOOK_URL:
+    if WEBHOOK_URL and WEBHOOK_URL.strip():
         # حالت Webhook (برای Render)
-        logger.info("Starting in Webhook mode...")
+        logger.info(f"Starting in Webhook mode with URL: {WEBHOOK_URL}")
         
         # تنظیم Webhook
-        telegram_app.bot.set_webhook(
-            url=f"{WEBHOOK_URL}/webhook",
-            allowed_updates=Update.ALL_TYPES
-        )
+        updater.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
         
         # اجرای Flask app
         app.run(host=LISTEN, port=PORT)
     else:
         # حالت Polling (برای توسعه)
         logger.info("Starting in Polling mode...")
-        telegram_app.run_polling(allowed_updates=Update.ALL_TYPES)
+        updater.start_polling()
+        updater.idle()
     
     # توقف زمان‌بند
     scheduler.shutdown()
