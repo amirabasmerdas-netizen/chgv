@@ -1,7 +1,6 @@
 import random
 from datetime import datetime
 from database import Database
-from config import COUNTRIES
 
 class GameLogic:
     def __init__(self):
@@ -12,7 +11,7 @@ class GameLogic:
         country_info = self.db.get_country_info(ai_country_code)
         
         if not country_info:
-            return
+            return []
         
         decisions = []
         
@@ -20,7 +19,7 @@ class GameLogic:
         if random.random() < 0.3 and country_info['gold'] > 200:
             success, message = self.db.upgrade_army(ai_country_code)
             if success:
-                decisions.append(f"🤖 {country_info['name']} ارتش خود را ارتقا داد")
+                decisions.append(f"{country_info['name']} ارتش خود را ارتقا داد")
         
         # 2. تصمیم درباره حمله (25% احتمال)
         if random.random() < 0.25:
@@ -28,9 +27,9 @@ class GameLogic:
             if target:
                 success = self.simulate_battle(ai_country_code, target)
                 if success:
-                    decisions.append(f"⚔️ {country_info['name']} به {target} حمله کرد و پیروز شد")
+                    decisions.append(f"{country_info['name']} به {target} حمله کرد و پیروز شد")
                 else:
-                    decisions.append(f"⚔️ {country_info['name']} به {target} حمله کرد و شکست خورد")
+                    decisions.append(f"{country_info['name']} به {target} حمله کرد و شکست خورد")
         
         # 3. تصمیم درباره اتحاد (15% احتمال)
         if random.random() < 0.15:
@@ -39,7 +38,8 @@ class GameLogic:
                 success, message = self.db.create_alliance(ai_country_code, ally)
                 if success:
                     ally_info = self.db.get_country_info(ally)
-                    decisions.append(f"🤝 {country_info['name']} با {ally_info['name']} اتحاد تشکیل داد")
+                    if ally_info:
+                        decisions.append(f"{country_info['name']} با {ally_info['name']} اتحاد تشکیل داد")
         
         return decisions
     
@@ -118,14 +118,21 @@ class GameLogic:
         attacker_wins = final_attacker > final_defender
         
         # ثبت رویداد
+        event_type = 'BATTLE_WIN' if attacker_wins else 'BATTLE_LOSE'
+        description = f"{attacker_info['name']} {'بر' if attacker_wins else 'از'} {defender_info['name']} {'پیروز شد' if attacker_wins else 'شکست خورد'}"
+        self.db.add_event(event_type, description, [attacker, defender])
+        
+        # انتقال منابع
         if attacker_wins:
-            # انتقال منابع به مهاجم
+            gold_transfer = random.randint(100, 300)
+            iron_transfer = random.randint(30, 100)
+            
             self.db.update_resources(attacker, 
-                                   gold_change=random.randint(100, 500),
-                                   iron_change=random.randint(50, 200))
+                                   gold_change=gold_transfer,
+                                   iron_change=iron_transfer)
             self.db.update_resources(defender,
-                                   gold_change=-random.randint(100, 300),
-                                   iron_change=-random.randint(30, 100))
+                                   gold_change=-gold_transfer,
+                                   iron_change=-iron_transfer)
         
         return attacker_wins
     
@@ -139,7 +146,7 @@ class GameLogic:
             SELECT c.code, c.player_id, c.power_score, p.username 
             FROM countries c
             JOIN players p ON c.player_id = p.user_id
-            WHERE c.controller_type = 'HUMAN'
+            WHERE c.controller_type = 'HUMAN' AND p.is_active = 1
             ORDER BY c.power_score DESC
             LIMIT 1
         ''')
@@ -165,17 +172,22 @@ class GameLogic:
         # تولید منابع برای همه کشورها
         cursor.execute('''
             UPDATE countries 
-            SET gold = gold + CAST(RANDOM() * 50 + 10 AS INTEGER),
-                iron = iron + CAST(RANDOM() * 30 + 5 AS INTEGER),
-                stone = stone + CAST(RANDOM() * 30 + 5 AS INTEGER),
-                food = food + CAST(RANDOM() * 100 + 20 AS INTEGER),
-                power_score = (
-                    SELECT (total_power/10) + (gold/100) + (iron/50) + (stone/50) 
-                    FROM army 
-                    WHERE army.country_code = countries.code
-                ),
+            SET gold = gold + CAST(ABS(RANDOM() % 50) + 10 AS INTEGER),
+                iron = iron + CAST(ABS(RANDOM() % 30) + 5 AS INTEGER),
+                stone = stone + CAST(ABS(RANDOM() % 30) + 5 AS INTEGER),
+                food = food + CAST(ABS(RANDOM() % 100) + 20 AS INTEGER),
                 last_update = ?
         ''', (datetime.now().isoformat(),))
+        
+        # به‌روزرسانی امتیاز قدرت
+        cursor.execute('''
+            UPDATE countries 
+            SET power_score = (
+                SELECT (total_power/10) + (gold/100) + (iron/50) + (stone/50) 
+                FROM army 
+                WHERE army.country_code = countries.code
+            )
+        ''')
         
         conn.commit()
         
