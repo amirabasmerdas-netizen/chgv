@@ -232,32 +232,31 @@ class Database:
         cursor.execute('SELECT * FROM army WHERE country_id = ?', (country_id,))
         return cursor.fetchone()
     
-  def upgrade_army_level(self, country_id, cost):
-    """ارتقای سطح ارتش"""
-    cursor = self.conn.cursor()
-    
-    # افزایش سطح و قدرت
-    cursor.execute('''
-    UPDATE army 
-    SET level = level + 1, 
-        power = power + 50,
-        defense = defense + 20,
-        last_training = CURRENT_TIMESTAMP
-    WHERE country_id = ?
-    ''', (country_id,))
-    
-    # کم کردن منابع
-    cursor.execute('''
-    UPDATE resources 
-    SET gold = gold - ?,
-        iron = iron - ?,
-        food = food - ?,
-        last_update = CURRENT_TIMESTAMP
-    WHERE country_id = ?
-    ''', (cost.get('gold', 0), cost.get('iron', 0), cost.get('food', 0), country_id))
-    
-    self.conn.commit()
+    def upgrade_army_level(self, country_id, cost):
+        """ارتقای سطح ارتش"""
+        cursor = self.conn.cursor()
+        
+        # افزایش سطح و قدرت
+        cursor.execute('''
+        UPDATE army 
+        SET level = level + 1, 
+            power = power + 50,
+            defense = defense + 20,
+            last_training = CURRENT_TIMESTAMP
+        WHERE country_id = ?
+        ''', (country_id,))
+        
+        # کم کردن منابع
+        cursor.execute('''
+        UPDATE resources 
+        SET gold = gold - ?,
+            iron = iron - ?,
+            food = food - ?,
+            last_update = CURRENT_TIMESTAMP
+        WHERE country_id = ?
+        ''', (cost.get('gold', 0), cost.get('iron', 0), cost.get('food', 0), country_id))
+        
+        self.conn.commit()
     
     def close(self):
         self.conn.close()
-
