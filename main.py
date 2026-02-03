@@ -2,8 +2,8 @@ import os
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes
+    Updater, CommandHandler, CallbackQueryHandler,
+    MessageHandler, Filters, CallbackContext
 )
 from flask import Flask, request
 import threading
@@ -29,8 +29,8 @@ advisor = Advisor()
 # برنامه Flask برای Webhook
 app = Flask(__name__)
 
-# ذخیره Application
-telegram_app = None
+# ذخیره Updater
+telegram_updater = None
 
 @app.route('/')
 def index():
@@ -38,25 +38,25 @@ def index():
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if telegram_app:
-        update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-        telegram_app.update_queue.put(update)
+    if telegram_updater:
+        update = Update.de_json(request.get_json(force=True), telegram_updater.bot)
+        telegram_updater.dispatcher.process_update(update)
     return 'OK'
 
 def run_flask():
     app.run(host='0.0.0.0', port=PORT)
 
 # دستورهای ربات
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update: Update, context: CallbackContext):
     user = update.effective_user
-    await update.message.reply_text(
+    update.message.reply_text(
         f"به جنگ جهانی باستان خوش آمدید {user.first_name}!\n\n"
         f"من ربات استراتژیک شما هستم. با مالک تماس بگیرید تا کشور خود را دریافت کنید.\n\n"
         f"مالک: @amele55\n"
         f"ورژن: 2.0"
     )
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def help_command(update: Update, context: CallbackContext):
     help_text = """
 🤖 **دستورهای ربات جنگ جهانی باستان:**
 
@@ -77,9 +77,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🔸 /add_player - افزودن بازیکن جدید
 🔸 /reset_game - ریست کل بازی
 """
-    await update.message.reply_text(help_text)
+    update.message.reply_text(help_text)
 
-async def my_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def my_country(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     country_info = db.get_country_info_by_player(user_id)
     
@@ -104,11 +104,11 @@ async def my_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 📊 امتیاز قدرت: {country_info.get('power_score', 0)}
 """
-        await update.message.reply_text(message)
+        update.message.reply_text(message)
     else:
-        await update.message.reply_text("شما هنوز کشوری ندارید. با مالک تماس بگیرید.")
+        update.message.reply_text("شما هنوز کشوری ندارید. با مالک تماس بگیرید.")
 
-async def resources(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def resources(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     country_info = db.get_country_info_by_player(user_id)
     
@@ -128,18 +128,18 @@ async def resources(update: Update, context: ContextTypes.DEFAULT_TYPE):
 سنگ: {country_info['stone']}
 غذا: {country_info['food']}
 
-📊 **ارزش کل:** {country_info['gold'] + country_info['iron']*2 + country_info['stone'] + country_info['food']/10}
+📊 **ارزش کل:** {int(country_info['gold'] + country_info['iron']*2 + country_info['stone'] + country_info['food']/10)}
 """
-        await update.message.reply_text(message, reply_markup=reply_markup)
+        update.message.reply_text(message, reply_markup=reply_markup)
     else:
-        await update.message.reply_text("کشوری پیدا نشد.")
+        update.message.reply_text("کشوری پیدا نشد.")
 
-async def upgrade_army(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def upgrade_army(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     country_info = db.get_country_info_by_player(user_id)
     
     if not country_info:
-        await update.message.reply_text("کشوری پیدا نشد.")
+        update.message.reply_text("کشوری پیدا نشد.")
         return
     
     success, message = db.upgrade_army(country_info['code'])
@@ -150,16 +150,16 @@ async def upgrade_army(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"{country_info['name']} ارتش خود را ارتقا داد",
                     [country_info['code']])
         
-        await update.message.reply_text(f"✅ {message}")
+        update.message.reply_text(f"✅ {message}")
     else:
-        await update.message.reply_text(f"❌ {message}")
+        update.message.reply_text(f"❌ {message}")
 
-async def alliances(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def alliances(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     country_info = db.get_country_info_by_player(user_id)
     
     if not country_info:
-        await update.message.reply_text("کشوری پیدا نشد.")
+        update.message.reply_text("کشوری پیدا نشد.")
         return
     
     conn = db.get_connection()
@@ -189,11 +189,11 @@ async def alliances(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(message, reply_markup=reply_markup)
+    update.message.reply_text(message, reply_markup=reply_markup)
 
-async def create_alliance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def create_alliance(update: Update, context: CallbackContext):
     if not context.args:
-        await update.message.reply_text("لطفا کد کشور را وارد کنید:\n/create_alliance <کد کشور>")
+        update.message.reply_text("لطفا کد کشور را وارد کنید:\n/create_alliance <کد کشور>")
         return
     
     target_code = context.args[0]
@@ -201,7 +201,7 @@ async def create_alliance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     country_info = db.get_country_info_by_player(user_id)
     
     if not country_info:
-        await update.message.reply_text("کشوری پیدا نشد.")
+        update.message.reply_text("کشوری پیدا نشد.")
         return
     
     success, message = db.create_alliance(country_info['code'], target_code)
@@ -214,32 +214,32 @@ async def create_alliance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"{country_info['name']} با {target_info['name']} اتحاد تشکیل داد",
                         [country_info['code'], target_code])
         
-        await update.message.reply_text(f"✅ {message}")
+        update.message.reply_text(f"✅ {message}")
     else:
-        await update.message.reply_text(f"❌ {message}")
+        update.message.reply_text(f"❌ {message}")
 
-async def get_advisor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def get_advisor(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     country_info = db.get_country_info_by_player(user_id)
     
     if not country_info:
-        await update.message.reply_text("کشوری پیدا نشد.")
+        update.message.reply_text("کشوری پیدا نشد.")
         return
     
     advice = advisor.generate_advice(country_info['code'])
     
     if advice:
-        await update.message.reply_text(advice['message'])
+        update.message.reply_text(advice['message'])
         
         # ذخیره پیام
         advisor.save_advice_message(country_info['code'], advice['message'])
     else:
-        await update.message.reply_text("وزیر: وضعیت شما خوب است. ادامه دهید!")
+        update.message.reply_text("وزیر: وضعیت شما خوب است. ادامه دهید!")
 
 # دستورهای مالک
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def admin_panel(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ دسترسی ممنوع!")
+        update.message.reply_text("❌ دسترسی ممنوع!")
         return
     
     keyboard = [
@@ -252,15 +252,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
+    update.message.reply_text(
         "👑 **پنل مدیریت مالک**\n\n"
         "یکی از گزینه‌ها را انتخاب کنید:",
         reply_markup=reply_markup
     )
 
-async def start_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start_season(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ دسترسی ممنوع!")
+        update.message.reply_text("❌ دسترسی ممنوع!")
         return
     
     season_id = db.start_season()
@@ -268,21 +268,21 @@ async def start_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ارسال به کانال خبری
     if CHANNEL_ID:
         try:
-            await context.bot.send_message(
+            context.bot.send_message(
                 CHANNEL_ID,
                 "🏁 **فصل جدید جنگ‌های باستان آغاز شد!**\n\n"
                 "پادشاهان! جهان در انتظار فتح شماست!\n\n"
                 "ساخته شده توسط @amele55\n"
                 "ورژن 2 ربات"
             )
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to send to channel: {e}")
     
-    await update.message.reply_text(f"✅ فصل جدید با شماره {season_id} آغاز شد!")
+    update.message.reply_text(f"✅ فصل جدید با شماره {season_id} آغاز شد!")
 
-async def end_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def end_season(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ دسترسی ممنوع!")
+        update.message.reply_text("❌ دسترسی ممنوع!")
         return
     
     winner = game.calculate_winner()
@@ -295,7 +295,7 @@ async def end_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
             country_info = db.get_country_info(winner['country_code'])
             
             try:
-                await context.bot.send_message(
+                context.bot.send_message(
                     CHANNEL_ID,
                     f"🏆 **پایان فصل جنگ‌های باستان**\n\n"
                     f"👑 فاتح نهایی جهان: {country_info['name']}\n"
@@ -304,23 +304,23 @@ async def end_season(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"منتظر فصل بعد باشید!\n"
                     f"ورژن 2 ربات"
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.error(f"Failed to send to channel: {e}")
         
-        await update.message.reply_text(
+        update.message.reply_text(
             f"✅ فصل با موفقیت پایان یافت!\n"
             f"🏆 برنده: {winner['username']} ({country_info['name']})"
         )
     else:
-        await update.message.reply_text("❌ برنده‌ای یافت نشد!")
+        update.message.reply_text("❌ برنده‌ای یافت نشد!")
 
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def broadcast(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ دسترسی ممنوع!")
+        update.message.reply_text("❌ دسترسی ممنوع!")
         return
     
     if not context.args:
-        await update.message.reply_text("لطفا پیام را وارد کنید:\n/broadcast <پیام>")
+        update.message.reply_text("لطفا پیام را وارد کنید:\n/broadcast <پیام>")
         return
     
     message = " ".join(context.args)
@@ -336,19 +336,20 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sent_count = 0
     for player in players:
         try:
-            await context.bot.send_message(
+            context.bot.send_message(
                 player[0],
                 f"📢 **پیام عمومی از مالک:**\n\n{message}"
             )
             sent_count += 1
-        except:
+        except Exception as e:
+            logger.error(f"Failed to send to player {player[0]}: {e}")
             continue
     
-    await update.message.reply_text(f"✅ پیام به {sent_count} بازیکن ارسال شد.")
+    update.message.reply_text(f"✅ پیام به {sent_count} بازیکن ارسال شد.")
 
-async def reset_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def reset_game(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
-        await update.message.reply_text("❌ دسترسی ممنوع!")
+        update.message.reply_text("❌ دسترسی ممنوع!")
         return
     
     keyboard = [
@@ -357,7 +358,7 @@ async def reset_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
+    update.message.reply_text(
         "⚠️ **هشدار!**\n\n"
         "آیا مطمئن هستید که می‌خواهید کل بازی را ریست کنید؟\n"
         "این عمل تمام داده‌ها را پاک می‌کند.",
@@ -365,22 +366,22 @@ async def reset_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # مدیریت Callback Query
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     
     data = query.data
     user_id = query.from_user.id
     
     if data == 'main_menu':
-        await query.edit_message_text(
+        query.edit_message_text(
             "🏛️ **منوی اصلی**\n\n"
             "یکی از گزینه‌ها را انتخاب کنید:"
         )
     
     elif data == 'add_player':
         if user_id != OWNER_ID:
-            await query.edit_message_text("❌ دسترسی ممنوع!")
+            query.edit_message_text("❌ دسترسی ممنوع!")
             return
         
         # نمایش کشورهای AI
@@ -396,7 +397,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='admin_menu')])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        query.edit_message_text(
             "🔍 **کشورهای تحت کنترل AI:**\n\n"
             "یکی را برای تخصیص به بازیکن انتخاب کنید:",
             reply_markup=reply_markup
@@ -404,24 +405,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif data.startswith('select_country_'):
         if user_id != OWNER_ID:
-            await query.edit_message_text("❌ دسترسی ممنوع!")
+            query.edit_message_text("❌ دسترسی ممنوع!")
             return
         
         country_code = data.replace('select_country_', '')
         context.user_data['selected_country'] = country_code
         
-        await query.edit_message_text(
+        query.edit_message_text(
             f"کشور انتخاب شد. لطفا آیدی عددی بازیکن را ارسال کنید."
         )
     
     elif data == 'start_season':
-        await start_season(update, context)
+        start_season(update, context)
     
     elif data == 'end_season':
-        await end_season(update, context)
+        end_season(update, context)
     
     elif data == 'broadcast':
-        await query.edit_message_text(
+        query.edit_message_text(
             "لطفا پیام عمومی را ارسال کنید:"
         )
         context.user_data['awaiting_broadcast'] = True
@@ -429,16 +430,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'confirm_reset':
         # پاک کردن و ایجاد مجدد دیتابیس
         db.__init__()
-        await query.edit_message_text("✅ بازی با موفقیت ریست شد!")
+        query.edit_message_text("✅ بازی با موفقیت ریست شد!")
     
     elif data == 'cancel_reset':
-        await query.edit_message_text("❌ ریست بازی لغو شد.")
+        query.edit_message_text("❌ ریست بازی لغو شد.")
     
     elif data == 'admin_menu':
-        await admin_panel(update, context)
+        admin_panel(update, context)
     
     elif data == 'upgrade_army':
-        await upgrade_army(update, context)
+        upgrade_army(update, context)
     
     elif data == 'generate_resources':
         # تولید منابع خودکار
@@ -448,7 +449,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if decisions:
             message += "\n\n🤖 **تصمیم‌های AI:**\n" + "\n".join(decisions)
         
-        await query.edit_message_text(message)
+        query.edit_message_text(message)
     
     elif data == 'create_alliance':
         # نمایش کشورهای قابل اتحاد
@@ -469,7 +470,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("🔙 بازگشت", callback_data='alliances')])
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(
+        query.edit_message_text(
             "🤝 **کشورهای قابل اتحاد:**\n\n"
             "یکی را برای پیشنهاد اتحاد انتخاب کنید:",
             reply_markup=reply_markup
@@ -482,13 +483,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         country_info = db.get_country_info_by_player(user_id)
         if country_info:
             success, message = db.create_alliance(country_info['code'], target_code)
-            await query.edit_message_text(f"{'✅' if success else '❌'} {message}")
+            query.edit_message_text(f"{'✅' if success else '❌'} {message}")
         else:
-            await query.edit_message_text("❌ کشور شما یافت نشد!")
+            query.edit_message_text("❌ کشور شما یافت نشد!")
     
     elif data == 'stats':
         if user_id != OWNER_ID:
-            await query.edit_message_text("❌ دسترسی ممنوع!")
+            query.edit_message_text("❌ دسترسی ممنوع!")
             return
         
         conn = db.get_connection()
@@ -519,10 +520,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 {'🏁 **فصل فعال:** بله' if active_season else '🚫 **فصل فعال:** خیر'}
 """
         
-        await query.edit_message_text(stats_message)
+        query.edit_message_text(stats_message)
 
 # مدیریت پیام‌های متنی
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def handle_message(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     message_text = update.message.text
     
@@ -540,7 +541,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # اطلاع به بازیکن جدید
                 try:
                     country_info = db.get_country_info(country_code)
-                    await context.bot.send_message(
+                    context.bot.send_message(
                         new_player_id,
                         f"🎉 **به بازی جنگ جهانی باستان خوش آمدید!**\n\n"
                         f"کشور شما: **{country_info['name']}** 🏛️\n\n"
@@ -549,16 +550,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     logger.error(f"Failed to send welcome message: {e}")
                 
-                await update.message.reply_text(
+                update.message.reply_text(
                     f"✅ بازیکن {new_player_id} به کشور {country_info['name']} تخصیص یافت."
                 )
             else:
-                await update.message.reply_text("❌ بازیکن از قبل وجود دارد.")
+                update.message.reply_text("❌ بازیکن از قبل وجود دارد.")
             
             del context.user_data['selected_country']
             
         except ValueError:
-            await update.message.reply_text("❌ آیدی باید عددی باشد!")
+            update.message.reply_text("❌ آیدی باید عددی باشد!")
     
     # بررسی اگر مالک در حال ارسال پیام عمومی است
     elif user_id == OWNER_ID and context.user_data.get('awaiting_broadcast'):
@@ -573,53 +574,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sent_count = 0
         for player in players:
             try:
-                await context.bot.send_message(
+                context.bot.send_message(
                     player[0],
                     f"📢 **پیام عمومی از مالک:**\n\n{message_text}"
                 )
                 sent_count += 1
-            except:
+            except Exception as e:
+                logger.error(f"Failed to send to player {player[0]}: {e}")
                 continue
         
-        await update.message.reply_text(f"✅ پیام به {sent_count} بازیکن ارسال شد.")
+        update.message.reply_text(f"✅ پیام به {sent_count} بازیکن ارسال شد.")
         context.user_data['awaiting_broadcast'] = False
 
 # تابع اصلی اجرای ربات
 def main():
-    global telegram_app
+    global telegram_updater
     
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN not set in environment variables!")
         return
     
-    # ساخت Application
-    application = Application.builder().token(BOT_TOKEN).build()
-    telegram_app = application
+    # ساخت Updater
+    updater = Updater(token=BOT_TOKEN, use_context=True)
+    telegram_updater = updater
+    
+    # دریافت Dispatcher
+    dp = updater.dispatcher
     
     # اضافه کردن handlerها
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("my_country", my_country))
-    application.add_handler(CommandHandler("resources", resources))
-    application.add_handler(CommandHandler("upgrade_army", upgrade_army))
-    application.add_handler(CommandHandler("alliances", alliances))
-    application.add_handler(CommandHandler("create_alliance", create_alliance))
-    application.add_handler(CommandHandler("advisor", get_advisor))
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("help", help_command))
+    dp.add_handler(CommandHandler("my_country", my_country))
+    dp.add_handler(CommandHandler("resources", resources))
+    dp.add_handler(CommandHandler("upgrade_army", upgrade_army))
+    dp.add_handler(CommandHandler("alliances", alliances))
+    dp.add_handler(CommandHandler("create_alliance", create_alliance))
+    dp.add_handler(CommandHandler("advisor", get_advisor))
     
     # دستورهای مالک
-    application.add_handler(CommandHandler("admin", admin_panel))
-    application.add_handler(CommandHandler("start_season", start_season))
-    application.add_handler(CommandHandler("end_season", end_season))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CommandHandler("reset_game", reset_game))
+    dp.add_handler(CommandHandler("admin", admin_panel))
+    dp.add_handler(CommandHandler("start_season", start_season))
+    dp.add_handler(CommandHandler("end_season", end_season))
+    dp.add_handler(CommandHandler("broadcast", broadcast))
+    dp.add_handler(CommandHandler("reset_game", reset_game))
     
     # Callback Query
-    application.add_handler(CallbackQueryHandler(button_handler))
+    dp.add_handler(CallbackQueryHandler(button_handler))
     
     # پیام‌های متنی
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     
-    # تنظیم Webhook
+    # تنظیم Webhook یا Polling
     if WEBHOOK_URL:
         # اجرای Flask در thread جداگانه
         flask_thread = threading.Thread(target=run_flask)
@@ -627,16 +632,18 @@ def main():
         flask_thread.start()
         
         # تنظیم Webhook
-        application.run_webhook(
+        updater.start_webhook(
             listen="0.0.0.0",
             port=PORT,
             url_path=BOT_TOKEN,
             webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}"
         )
+        updater.idle()
     else:
         # استفاده از polling برای تست
         logger.info("Using polling mode (WEBHOOK_URL not set)")
-        application.run_polling()
+        updater.start_polling()
+        updater.idle()
 
 if __name__ == '__main__':
     main()
