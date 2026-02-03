@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import random
 from datetime import datetime
 from config import COUNTRIES, ARMY_LEVELS
 
@@ -9,7 +10,7 @@ class Database:
         self.init_database()
     
     def get_connection(self):
-        return sqlite3.connect(self.db_name)
+        return sqlite3.connect(self.db_name, check_same_thread=False)
     
     def init_database(self):
         conn = self.get_connection()
@@ -23,8 +24,7 @@ class Database:
                 country_code TEXT,
                 controller_type TEXT DEFAULT 'HUMAN',
                 is_active INTEGER DEFAULT 1,
-                join_date TEXT,
-                FOREIGN KEY (country_code) REFERENCES countries(code)
+                join_date TEXT
             )
         ''')
         
@@ -41,8 +41,7 @@ class Database:
                 stone INTEGER DEFAULT 500,
                 food INTEGER DEFAULT 1000,
                 power_score INTEGER DEFAULT 0,
-                last_update TEXT,
-                FOREIGN KEY (player_id) REFERENCES players(user_id)
+                last_update TEXT
             )
         ''')
         
@@ -68,9 +67,7 @@ class Database:
                 country2_code TEXT,
                 relationship_score INTEGER DEFAULT 50,
                 is_active INTEGER DEFAULT 1,
-                created_date TEXT,
-                FOREIGN KEY (country1_code) REFERENCES countries(code),
-                FOREIGN KEY (country2_code) REFERENCES countries(code)
+                created_date TEXT
             )
         ''')
         
@@ -80,7 +77,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 event_type TEXT,
                 description TEXT,
-                countries_involved TEXT,  # JSON array
+                countries_involved TEXT,
                 date_time TEXT,
                 season_id INTEGER
             )
@@ -125,6 +122,29 @@ class Database:
         
         conn.commit()
         conn.close()
+    
+    def get_country_info_by_player(self, user_id):
+        """دریافت اطلاعات کشور بر اساس آیدی بازیکن"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT c.*, a.soldiers_count, a.cavalry_count, a.siege_count, a.level, a.total_power 
+            FROM players p
+            JOIN countries c ON p.country_code = c.code
+            JOIN army a ON c.code = a.country_code
+            WHERE p.user_id = ?
+        ''', (user_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            columns = ['code', 'name', 'controller_type', 'player_id', 'army_level', 
+                      'gold', 'iron', 'stone', 'food', 'power_score', 'last_update',
+                      'soldiers', 'cavalry', 'siege', 'level', 'total_power']
+            return dict(zip(columns, result))
+        return None
     
     def add_player(self, user_id, username, country_code):
         conn = self.get_connection()
@@ -172,7 +192,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT c.*, p.username, a.* 
+            SELECT c.*, p.username, a.soldiers_count, a.cavalry_count, a.siege_count, a.level, a.total_power 
             FROM countries c
             LEFT JOIN players p ON c.player_id = p.user_id
             LEFT JOIN army a ON c.code = a.country_code
@@ -180,9 +200,11 @@ class Database:
         ''', (country_code,))
         
         result = cursor.fetchone()
-        columns = [desc[0] for desc in cursor.description]
         
         if result:
+            columns = ['code', 'name', 'controller_type', 'player_id', 'army_level', 
+                      'gold', 'iron', 'stone', 'food', 'power_score', 'last_update',
+                      'username', 'soldiers', 'cavalry', 'siege', 'level', 'total_power']
             country_info = dict(zip(columns, result))
             conn.close()
             return country_info
@@ -278,6 +300,9 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         
+        # پایان دادن به فصل فعال قبلی
+        cursor.execute('UPDATE seasons SET is_active = 0 WHERE is_active = 1')
+        
         cursor.execute('''
             INSERT INTO seasons (start_date, is_active)
             VALUES (?, 1)
@@ -328,3 +353,14 @@ class Database:
         conn.commit()
         conn.close()
         return True
+    
+    def get_player_country_code(self, user_id):
+        """دریافت کد کشور بازیکن"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT country_code FROM players WHERE user_id = ?', (user_id,))
+        result = cursor.fetchone()
+        
+        conn.close()
+        return result[0] if result else None
